@@ -1,0 +1,26 @@
+{
+  "name": "dsh-effort-slider",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness client plugin: Codex/Claude-style reasoning-effort slider in the composer model menu.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ]
+}

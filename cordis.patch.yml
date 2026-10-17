@@ -1,0 +1,5 @@
+# Reasoning Effort Slider bundle patch.
+# DeepSeek Harness merges this layer when the plugin bundle is enabled.
+- insert:
+    - id: effort-slider
+      name: 'dsh-effort-slider'
