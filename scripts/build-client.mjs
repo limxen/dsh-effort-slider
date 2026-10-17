@@ -1,13 +1,13 @@
-// Builds lib/client.js (permanent client bundle) from client.js (dynamic source).
+// Builds the permanent client bundle from the shared client.js source.
 //
-// The dynamic source targets the DeepSeek Harness dynamic-plugin runtime (globals: React,
-// styles, ctx, slots). The permanent bundle wraps it in the web module-loader
-// format the harness serves for `dsh.client` packages:
+// The bundle provides the React, ReactDOM and styles globals used by the source,
+// and uses the web module-loader format served for `dsh.client` packages:
 //
 //   window.__ModuleLoader__.load({ id: <packageName>, factory: (require) => ... })
 //
-// Inside the factory we provide the two globals the source needs:
+// Inside the factory we provide the runtime globals the source needs:
 //   - React       <- require("react")
+//   - ReactDOM    <- require("react-dom")
 //   - styles      <- a shim that appends a <style> element (single instance,
 //                    replaced on re-apply; the page reset clears it)
 //
@@ -26,7 +26,8 @@ const bundle = `window.__ModuleLoader__.load({
 \t\tvar exports = module.exports;
 \t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 \t\tlet React = require("react");
-\t\t// Shim for the dynamic runtime's \`styles\` builtin: one <style> element,
+\t\tlet ReactDOM = require("react-dom");
+\t\t// Styles shim: one <style> element,
 \t\t// replaced on re-apply (a page reset clears it).
 \t\tconst styles = (() => {
 \t\t\tlet el = null;
