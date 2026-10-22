@@ -62,11 +62,26 @@ function harness({ defaultEffort, count = 3, select = async () => ({ ok: true })
           groups: [{ id: 'provider', models: [{ id: 'model', reasoning: {
             efforts: levels.slice(0, count), ...(defaultEffort === undefined ? {} : { defaultEffort }),
           } }] }],
+          pending: null,
         };
+        const listeners = new Set();
+        const notify = () => { for (const fn of listeners) fn(); };
         directories.set(id, {
           snapshot,
-          store: { getSnapshot: () => snapshot, subscribe: () => () => {} },
-          select: (selection) => select(selection, id),
+          notify,
+          listenerCount: () => listeners.size,
+          store: {
+            getSnapshot: () => snapshot,
+            subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+          },
+          select: async (selection) => {
+            snapshot.pending = selection;
+            notify();
+            try { return await select(selection, id); }
+            finally {
+              if (snapshot.pending === selection) { snapshot.pending = null; notify(); }
+            }
+          },
         });
       }
       return directories.get(id);
@@ -248,4 +263,97 @@ test('successful optimistic choice waits for the shared projection', async () =>
 
 test('models with fewer than two declared levels still have no slider', () => {
   for (const count of [0, 1]) assert.equal(harness({ count }).mount().slider(), undefined);
+});
+
+for (const defaultEffort of [undefined, 'medium']) {
+  test(`removed saved effort is shown as unavailable (default=${defaultEffort})`, async () => {
+    const writes = [];
+    const h = harness({ defaultEffort, count: 2, select: async (selection) => {
+      writes.push(selection);
+      return { ok: true };
+    } });
+    h.inject();
+    const state = h.directories.get('a').snapshot;
+    state.current = { provider: 'provider', model: 'model', reasoningEffort: 'high' };
+    const menu = h.mount();
+    assert.equal(menu.slider(), undefined);
+    assert.match(find(menu.render(), (node) => node.props.role === 'status').props.children[0], /high/);
+    assert.deepEqual(writes, []);
+    const reset = find(menu.render(), (node) => Object.hasOwn(node.props, 'data-dsh-effort-reset'));
+    assert(reset);
+    reset.props.onClick();
+    await tick();
+    assert.equal(menu.slider().props.pending, 0);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].reasoningEffort, defaultEffort === undefined ? undefined : 'low');
+    state.current = writes[0];
+    assert.equal(menu.slider().props.pending, null);
+    assert.equal(menu.slider().props.index, 0);
+  });
+}
+
+for (const externalEffort of ['low', 'medium']) {
+  test(`native same-model ${externalEffort} selection cancels older writes immediately`, async () => {
+    const first = deferred();
+    const writes = [];
+    const h = harness({ defaultEffort: 'low', select: (selection) => {
+      writes.push(selection);
+      return writes.length === 1 ? first.promise : Promise.resolve({ ok: true });
+    } });
+    const menu = h.mount();
+    menu.slider().props.onPick(1);
+    menu.slider().props.onPick(2);
+    await tick();
+    const directory = h.directories.get('a');
+    const nativeChoice = { provider: 'provider', model: 'model', reasoningEffort: externalEffort };
+    await directory.select(nativeChoice);
+    directory.snapshot.current = nativeChoice;
+    assert.equal(menu.slider().props.pending, null);
+    assert.equal(menu.slider().props.index, externalEffort === 'low' ? 0 : 1);
+    first.reject(new Error('late error from superseded request'));
+    await tick();
+    assert.deepEqual(writes.map((entry) => entry.reasoningEffort), ['medium', externalEffort]);
+    assert.equal(find(menu.render(), (node) => node.props.role === 'alert'), undefined);
+    assert.equal(directory.listenerCount(), 0);
+  });
+}
+
+test('native model change is not overwritten by an older queued slider choice', async () => {
+  const first = deferred();
+  const writes = [];
+  const h = harness({ select: (selection) => {
+    writes.push(selection);
+    return writes.length === 1 ? first.promise : Promise.resolve({ ok: true });
+  } });
+  const writer = h.inject().select;
+  const earlier = writer({ provider: 'provider', model: 'model', reasoningEffort: 'medium' });
+  const queued = writer({ provider: 'provider', model: 'model', reasoningEffort: 'high' });
+  await h.directories.get('a').select({ provider: 'provider', model: 'another-model', reasoningEffort: 'low' });
+  assert.deepEqual(await earlier, { superseded: true });
+  assert.deepEqual(await queued, { superseded: true });
+  first.resolve({ ok: true });
+  await tick();
+  assert.deepEqual(writes.map((entry) => entry.model), ['model', 'another-model']);
+});
+
+test('new slider input after native selection survives repeated native store updates', async () => {
+  const first = deferred(), external = deferred();
+  const writes = [];
+  const h = harness({ select: (selection) => {
+    writes.push(selection.reasoningEffort);
+    return writes.length === 1 ? first.promise : writes.length === 2 ? external.promise : Promise.resolve({ ok: true });
+  } });
+  const writer = h.inject().select;
+  const earlier = writer({ provider: 'provider', model: 'model', reasoningEffort: 'low' });
+  const directory = h.directories.get('a');
+  const native = directory.select({ provider: 'provider', model: 'model', reasoningEffort: 'medium' });
+  assert.deepEqual(await earlier, { superseded: true });
+  const latest = writer({ provider: 'provider', model: 'model', reasoningEffort: 'high' });
+  directory.notify();
+  external.resolve({ ok: true });
+  await native;
+  first.resolve({ ok: true });
+  assert.deepEqual(await latest, { ok: true });
+  assert.deepEqual(writes, ['low', 'medium', 'high']);
+  assert.equal(directory.listenerCount(), 0);
 });
