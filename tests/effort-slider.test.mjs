@@ -107,6 +107,7 @@ function harness({ defaultEffort, count = 3, select = async () => ({ ok: true })
           instance.dirty = false;
           active = instance;
           tree = Component(props);
+          instance.commit?.(tree);
           for (const effect of instance.effects) {
             if (!effect.pending) continue;
             effect.pending = false;
@@ -128,11 +129,82 @@ function harness({ defaultEffort, count = 3, select = async () => ({ ok: true })
   const mount = (id = 'a') => {
     const menu = { element: { addEventListener() {}, removeEventListener() {} }, cellClass: 'native' };
     const instance = view(registration.Component, inject(id), [menu, true]);
+    instance.surface = menu.element;
     instance.slider = () => find(instance.render(), (node) => node.type.name === 'EffortSlider');
     return instance;
   };
   const track = (slider) => find(view(slider.type, slider.props).render(), (node) => node.props.role === 'slider');
   return { inject, mount, track, directories };
+}
+
+// Model the relevant DOM focus rules without a browser: canceling mousedown
+// preserves focus, removing the focused field returns focus to body, and menu
+// keydown listeners only receive events whose target is still inside the menu.
+function menuFocusFixture(menu) {
+  const handlers = new Set();
+  menu.surface.addEventListener = (type, handler) => { if (type === 'keydown') handlers.add(handler); };
+  menu.surface.removeEventListener = (type, handler) => { if (type === 'keydown') handlers.delete(handler); };
+  const body = { name: 'body' };
+  let focused = body, field = null, tree, closed = false;
+  const focusable = (name) => ({ name, focus() { focused = this; } });
+  const advanced = focusable('advanced'), slider = focusable('slider'), reset = focusable('reset');
+  const trigger = { ...focusable('trigger'), click() { closed = true; } };
+  menu.commit = (next) => {
+    tree = next;
+    const advancedNode = find(tree, (node) => node.props.className?.includes('dsh-effort-advanced'));
+    const extension = find(tree, (node) => node.props.className === 'dsh-effort-extension');
+    const nextField = find(tree, (node) => node.type.name === 'EffortSlider') ? slider
+      : find(tree, (node) => Object.hasOwn(node.props, 'data-dsh-effort-reset')) ? reset : null;
+    if (field !== nextField && focused === field) focused = body;
+    field = nextField;
+    advancedNode.props.ref.current = advanced;
+    extension.props.ref.current = {
+      querySelector: (selector) => selector === '[role="slider"]' ? (field === slider ? slider : null) : field,
+    };
+    // DOM discovery is excluded by the shared harness; supply the native
+    // trigger ref that the aria-controls observer normally discovers.
+    menu.refs[2].current = trigger;
+  };
+  menu.render();
+  return {
+    get focused() { return focused.name; },
+    get field() { return field?.name; },
+    get closed() { return closed; },
+    clickAdvanced() {
+      const button = find(tree, (node) => node.props.className?.includes('dsh-effort-advanced'));
+      let canceled = false;
+      button.props.onMouseDown({ preventDefault() { canceled = true; } });
+      if (!canceled) advanced.focus();
+      button.props.onClick();
+      menu.render();
+    },
+    press(key) {
+      if (focused === advanced || focused === field) {
+        const event = { key, target: focused, preventDefault() {}, stopPropagation() {} };
+        for (const handler of handlers) handler(event);
+      }
+      menu.render();
+    },
+  };
+}
+
+for (const unavailable of [false, true]) {
+  test(`mouse collapse preserves menu focus and Escape closes it (unavailable=${unavailable})`, () => {
+    const h = harness({ count: 2 });
+    h.inject();
+    if (unavailable) h.directories.get('a').snapshot.current.reasoningEffort = 'high';
+    const dom = menuFocusFixture(h.mount());
+    const field = unavailable ? 'reset' : 'slider';
+    assert.equal(dom.focused, field, 'opening advanced must focus its field');
+    dom.clickAdvanced();
+    assert.equal(dom.field, undefined, 'the advanced field must be removed when collapsed');
+    assert.equal(dom.focused, 'advanced', 'mouse collapse must retain a usable menu focus target');
+    dom.clickAdvanced();
+    assert.equal(dom.focused, field, 'reopening must still focus the slider or recovery button');
+    dom.clickAdvanced();
+    dom.press('Escape');
+    assert.equal(dom.closed, true, 'Escape after mouse collapse must reach the native close trigger');
+  });
 }
 
 test('rapid changes serialize writes and coalesce intermediate targets', async () => {

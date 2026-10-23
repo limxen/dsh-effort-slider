@@ -427,6 +427,8 @@ body[data-ds-dark-theme] .dsh-pref-knob{background:#000;box-shadow:0 0 0 1px rgb
 
       const focusSlider = () => extensionRef.current?.querySelector('[role="slider"], [data-dsh-effort-reset]')?.focus();
       const toggleAdvanced = () => {
+        // Mouse down preserves the slider's focus; move it before unmounting.
+        if (expanded) advancedRef.current?.focus();
         setExpanded((value) => !value);
       };
       React.useEffect(() => {
